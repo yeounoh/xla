@@ -2595,6 +2595,9 @@ XlaOp XlaBuilder::RngBitGenerator(RandomAlgorithm algorithm,
   return ReportErrorOrReturn([&]() -> StatusOr<XlaOp> {
     TF_RETURN_IF_ERROR(ShapeUtil::ValidateShapeWithOptionalLayout(shape));
     TF_ASSIGN_OR_RETURN(Shape state_shape, GetShape(initial_state));
+    // TODO(yeounoh)
+    std::cout << "*** RngBitGenerator: " << std::endl;
+    std::cout << "- state_shape: " << state_shape.ToString() << std::endl;
     Shape output_shape = shape;
     output_shape.set_element_type(PRIMITIVE_TYPE_INVALID);
     if (primitive_util::IsArrayType(shape.element_type())) {
@@ -2602,6 +2605,7 @@ XlaOp XlaBuilder::RngBitGenerator(RandomAlgorithm algorithm,
           primitive_util::UnsignedIntegralTypeForBitWidth(
               primitive_util::BitWidth(shape.element_type())));
     }
+    std::cout << "- output_shape: " << output_shape.ToString() << std::endl;
     if (!primitive_util::IsUnsignedIntegralType(output_shape.element_type())) {
       return InvalidArgument("Unsupported shape for RngBitGenerator: %s",
                              PrimitiveType_Name(shape.element_type()));

@@ -509,83 +509,46 @@ XlaOp ConvertRandomBitsToUniformFloatingPoint(XlaOp bits, XlaOp minval,
     TF_ASSIGN_OR_RETURN(const Shape* bits_shape, builder->GetShapePtr(bits));
     PrimitiveType value_type = minval_shape->element_type();
     PrimitiveType bit_type = bits_shape->element_type();
-    auto is_f32_or_f64 = (value_type == F32 && bit_type == U32) ||
-                         (value_type == F64 && bit_type == U64);
-    auto is_f16 = value_type == F16 && bit_type == U16;
-    auto is_f8 =
-        (value_type == F8E5M2 || value_type == F8E4M3FN) && bit_type == U8;
 
-    if (!(is_f32_or_f64 || is_f16 || is_f8)) {
+    if (!primitive_util::IsIntegralType(bit_type) ||
+        !primitive_util::IsFloatingPointType(value_type)) {
       return InvalidArgument(
           "In ConvertRandomBitsToUniformFloatingPoint, value_type and bit_type "
-          "can only be one of those combinations: (float8, uint8), (float16, "
-          "uint16), (float32, uint32) and (float64, uint64). Got combination: "
-          "(%s, %s).",
+          "can only be (floating_type, integer_type). Got combination: (%s, "
+          "%s).",
           primitive_util::LowercasePrimitiveTypeName(value_type),
           primitive_util::LowercasePrimitiveTypeName(bit_type));
     }
+    // TODO(b/256715195): Consider using the approach of the non-XLA kernels
+    // (see `tsl::random::Uint16ToHalf`).
 
-    if (is_f32_or_f64) {
-      // TODO(b/256715195): Consider using the approach in the F16 case.
-
-      // Form random mantissa bits for float/double, with a leading 1 bit.
-      int num_float_bits = primitive_util::BitWidth(value_type);
-      // Subtract one as SignificandWidth includes the leading 1 bit.
-      int num_mantissa_bits = primitive_util::SignificandWidth(value_type) - 1;
-
-      // Ignore the exponent bits and convert the mantissa bits to the floating
-      // point type.
-      bits = ShiftRightLogical(
-          bits, ScalarLike(bits, num_float_bits - num_mantissa_bits));
-
-      // We have an integer-valued floating point number in the range
-      // [0, 2**{num_mantissa_bits}).
-      XlaOp values = ConvertElementType(bits, value_type);
-
-      // Divide by 2**{-num_mantissa_bits} to get a number in the range
-      // [0.0, 1.0).
-      values = values * ScalarLike(values, std::ldexp(1., -num_mantissa_bits));
-
-      // Multiply and add to shift to the range [minval, maxval).
-      return values * (maxval - minval) + minval;
-    } else if (is_f16) {
-      // This path follows the approach of the non-XLA kernels (see
-      // `tsl::random::Uint16ToHalf`). IEEE754 halfs are formatted as follows
-      // (MSB first):
-      //    sign(1) exponent(5) mantissa(10)
-      // Conceptually construct the following:
-      //    sign == 0
-      //    exponent == 15  -- an excess 15 representation of a zero exponent
-      //    mantissa == 10 random bits
-
-      auto mantissa = bits & ScalarLike(bits, 0x3ffu);  // 10 bit mantissa
-      auto exponent = ScalarLike(bits, static_cast<uint16_t>(15) << 10);
-      auto u16_result = exponent | mantissa;
-      auto result = BitcastConvertType(u16_result, F16);
-      return result - ScalarLike(result, 1.0);
-    } else if (is_f8) {
-      XlaOp result;
-      if (value_type == F8E5M2) {
-        auto mantissa = bits & ScalarLike(bits, 0x3u);
-        auto exponent = ScalarLike(bits, static_cast<uint16_t>(15) << 2);
-        auto u8_result = exponent | mantissa;
-        result = BitcastConvertType(u8_result, F8E5M2);
-      } else if (value_type == F8E4M3FN) {
-        auto mantissa = bits & ScalarLike(bits, 0x7u);
-        auto exponent = ScalarLike(bits, static_cast<uint16_t>(7) << 3);
-        auto u8_result = exponent | mantissa;
-        result = BitcastConvertType(u8_result, F8E4M3FN);
-      } else {
-        return InvalidArgument(
-            "We currently support F8E5M2 and F8E4M3FN in "
-            "ConvertRandomBitsToUniformFloatingPoint as valid FP8 type. Got "
-            "value type: (%s).",
-            primitive_util::LowercasePrimitiveTypeName(value_type));
-      }
-      return result - ScalarLike(result, 1.0);
-    } else {
-      return InternalError("This point shouldn't have been reached.");
+    // Form random mantissa bits for float/double, with a leading 1 bit.
+    int num_bits = primitive_util::BitWidth(bit_type);
+    // Subtract one as SignificandWidth includes the leading 1 bit.
+    int num_mantissa_bits = primitive_util::SignificandWidth(value_type) - 1;
+    if (num_mantissa_bits > num_bits) {
+      return InvalidArgument(
+          "bits argument must have enough bits to cover the number of mantissa "
+          "bits of the result type");
     }
+
+    // Ignore the exponent bits and convert the mantissa bits to the floating
+    // point type.
+    auto shift_offset = ScalarLike(bits, num_bits - num_mantissa_bits);
+    bits = ShiftRightLogical(ShiftLeft(bits, shift_offset), shift_offset);
+
+    // We have an integer-valued floating point number in the range
+    // [0, 2**{num_mantissa_bits + 1}), since we are ignoring the exponent bits
+    // the implicit leading bit is 0.
+    XlaOp values = ConvertElementType(bits, value_type);
+
+    // Divide by 2**{-num_mantissa_bits - 1} to get a number in the range
+    // [0.0, 1.0).
+    values =
+        values * ScalarLike(values, std::ldexp(1., -num_mantissa_bits - 1));
+
+    // Multiply and add to shift to the range [minval, maxval).
+    return values * (maxval - minval) + minval;
   });
 }
 

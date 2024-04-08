@@ -264,9 +264,7 @@ limitations under the License.
 #include "xla/stream_executor/rocm/rocm_platform_id.h"
 #endif
 
-#ifdef PLATFORM_GOOGLE
 #include "xla/hlo/experimental/auto_sharding/auto_sharding.h"
-#endif  // PLATFORM_GOOGLE
 
 namespace xla {
 namespace gpu {
@@ -631,12 +629,6 @@ absl::Status RunSPMDPasses(
   const int64_t num_partitions = hlo_module->config().num_partitions();
   bool auto_sharding = hlo_module->config().use_auto_spmd_partitioning();
 
-#ifndef PLATFORM_GOOGLE
-  if (auto_sharding) {
-    LOG(ERROR) << "GPU autosharding is not yet available in open source.";
-  }
-#endif
-
   if (num_partitions > 1) {
     if (!hlo_module->config().use_spmd_partitioning()) {
       return InvalidArgument(
@@ -669,7 +661,6 @@ absl::Status RunSPMDPasses(
     spmd_pipeline.AddPass<HloConstantSplitter>();
     spmd_simplify.AddPass<HloDCE>();
 
-#ifdef PLATFORM_GOOGLE
     if (auto_sharding) {
       AutoShardingOption option;
       option.enable = true;
@@ -696,7 +687,6 @@ absl::Status RunSPMDPasses(
               .xla_gpu_auto_spmd_partitioning_memory_budget_ratio();
       spmd_pipeline.AddPass<AutoSharding>(option);
     }
-#endif  // PLATFORM_GOOGLE
 
     spmd_pipeline.AddPass<ShardingPropagation>(
         /*is_spmd=*/true, /*propagate_metadata=*/false,
